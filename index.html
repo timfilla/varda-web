@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Varda — Night Sky Console</title>
+<meta name="description" content="Varda: a self-hosted night-sky console. See what's visible tonight, explore the sky, and master all 88 constellations.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Michroma&family=Space+Grotesk:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/varda.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='5' fill='%2307090F' stroke='%23F0B257' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23F0B257'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<div id="shell">
+
+  <header id="brand">
+    <div class="brand-mark" aria-hidden="true"></div>
+    <div>
+      <div class="brand-name">VARDA</div>
+      <div class="brand-tag">Night Sky Console</div>
+    </div>
+  </header>
+
+  <div id="status-band" role="status" aria-label="Sky conditions console">
+    <div class="st-cell">
+      <span class="st-key">Local time</span>
+      <span class="st-val" id="st-clock">--:--:--</span>
+    </div>
+    <div class="st-cell">
+      <span class="st-key">Date</span>
+      <span class="st-val" id="st-date">—</span>
+    </div>
+    <div class="st-cell">
+      <span class="st-key">Sidereal</span>
+      <span class="st-val" id="st-lst">—</span>
+    </div>
+    <div class="st-cell">
+      <span class="st-key">Sky state</span>
+      <span class="st-val" id="st-sky">—</span>
+    </div>
+    <div class="st-cell">
+      <span class="st-key">Moon</span>
+      <span class="st-val" id="st-moon">—</span>
+    </div>
+    <div class="st-cell">
+      <span class="st-key">Site</span>
+      <span class="st-val" id="st-site">—</span>
+    </div>
+    <div id="st-spacer" class="st-cell"></div>
+    <svg class="st-constellation" viewBox="0 0 128 36" aria-hidden="true">
+      <polyline points="10,27 34,9 60,21 88,7 116,19" fill="none"
+                stroke="rgba(99,216,200,0.35)" stroke-width="1"/>
+      <circle class="tw t1" cx="10"  cy="27" r="2.4"/>
+      <circle class="tw t2" cx="34"  cy="9"  r="2.1"/>
+      <circle class="tw t3" cx="60"  cy="21" r="2.6"/>
+      <circle class="tw t4" cx="88"  cy="7"  r="2.0"/>
+      <circle class="tw t5" cx="116" cy="19" r="2.3"/>
+    </svg>
+  </div>
+
+  <nav id="nav-rail" aria-label="Main">
+    <!-- pills injected by app.js -->
+    <div class="nav-foot">
+      All positions computed locally.<br>
+      No network needed after load.<br>
+      <span class="mono">v1.1</span>
+    </div>
+  </nav>
+
+  <main id="main">
+    <div id="view-tonight" class="view"></div>
+    <div id="view-explorer" class="view hidden"></div>
+    <div id="view-academy" class="view hidden"></div>
+  </main>
+
+</div>
+
+<script>var VARDA = window.VARDA = window.VARDA || {};</script>
+<!-- Data (largest first so the browser can stream while parsing the rest) -->
+<script src="data/stars.js"></script>
+<script src="data/constellations_geo.js"></script>
+<script src="data/dsos.js"></script>
+<script src="data/lore.js"></script>
+
+<!-- Engine -->
+<script src="js/astro.js"></script>
+<script src="js/catalog.js"></script>
+<script src="js/render.js"></script>
+
+<!-- Views -->
+<script src="js/tonight.js"></script>
+<script src="js/explorer.js"></script>
+<script src="js/learn.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
