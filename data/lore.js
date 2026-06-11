@@ -116,7 +116,7 @@ VARDA.UNITS = [
   { id: 'I',  title: 'Unit I \u00B7 The Northern Sky',
     note: 'The circumpolar court and the four seasons of the mid-northern observer. Master these and no clear night at home is unfamiliar.',
     lessons: [0, 1, 2, 3, 4, 5, 6] },
-  { id: 'II', title: 'Unit II \u00B7 The Southern Sky',
+  { id: 'II', title: 'Unit II \u00B7 The Southern Sky', alt: { 1: 'Summer\u2019s Hunt' },
     note: 'The deep south \u2014 the Cross, the Ship, the navigators\u2019 aviary \u2014 plus the equatorial lessons both hemispheres share.',
     lessons: [1, 4, 6, 7, 8, 9, 10] }
 ];

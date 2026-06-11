@@ -322,6 +322,39 @@ select.input { font-family: "Space Grotesk", sans-serif; }
 }
 .see-more:hover { border-color: var(--plasma); background: rgba(99,216,200,0.06); }
 
+/* search */
+.search-wrap { position: relative; flex: 1; min-width: 0; }
+.search-wrap .input { width: 100%; }
+.search-dd {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 40;
+  background: rgba(11,16,29,0.97); backdrop-filter: blur(4px);
+  border: 1px solid var(--ion); border-radius: 3px 12px 3px 3px;
+  max-height: 320px; overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+.sd-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  width: 100%; padding: 8px 12px; text-align: left;
+  background: transparent; border: 0; border-bottom: 1px solid rgba(42,53,80,0.5);
+  cursor: pointer;
+}
+.sd-item:hover { background: rgba(240,178,87,0.12); }
+.sd-item:last-child { border-bottom: 0; }
+.sd-name { font-size: 13.5px; font-weight: 600; }
+.sd-sub { font-size: 10.5px; color: var(--dim); }
+.sd-empty { padding: 10px 12px; font-size: 12px; color: var(--dim); font-style: italic; }
+.search-msg { grid-column: 2; font-size: 12px; min-height: 0; }
+.search-msg:empty { display: none; }
+.search-msg .err { color: var(--alert); }
+.exp-search { max-width: 230px; }
+
+/* pinned / hover highlight rows */
+.obj-row { cursor: pointer; }
+.obj-row.pinned {
+  background: rgba(240,178,87,0.13);
+  box-shadow: inset 2px 0 0 var(--ion);
+}
+
 /* ---------------- explorer ---------------- */
 .explorer-panel { display: flex; flex-direction: column; height: calc(100vh - 110px); min-height: 540px; }
 .exp-toolbar {
@@ -401,7 +434,7 @@ select.input { font-family: "Space Grotesk", sans-serif; }
   font-family: Michroma, sans-serif; font-size: 13px;
   letter-spacing: 0.16em; text-transform: uppercase; color: var(--plasma);
 }
-.unit-note { font-size: 12.5px; color: var(--dim); margin-top: 4px; max-width: 640px; line-height: 1.5; }
+.unit-note { font-size: 12.5px; color: var(--dim); margin-top: 4px; line-height: 1.5; }
 .unit-pct { font-size: 19px; color: var(--ion); white-space: nowrap; }
 .unit-star { color: var(--ion); }
 .lesson-grid {

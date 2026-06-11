@@ -8,8 +8,12 @@ var VARDA = window.VARDA || {};
 
 VARDA.learn = (function () {
   var root, quiz = null;
-  var STAGE_NAMES = ['Figure', 'Lines only', 'Stars alone'];
-  var STAGE_KEYS = ['figure', 'lines', 'stars'];
+  var STAGE_NAMES = ['Lines & stars', 'Stars only', 'Real sky'];
+  var STAGE_CONF = [
+    { key: 'figure', field: false, real: false },   // lines + the figure's stars
+    { key: 'stars',  field: false, real: false },   // the figure's stars alone
+    { key: 'stars',  field: true,  real: true  }    // stars amid the real starfield
+  ];
 
   function lvl(cid) { return VARDA.state.progress[cid] || 0; }
   function setLvl(cid, l) {
@@ -49,13 +53,14 @@ VARDA.learn = (function () {
   }
 
   /* ---------- Overview ---------- */
-  function lessonCardHTML(i) {
+  function lessonCardHTML(i, altTitle) {
     var L = VARDA.LESSONS[i];
     var m = lessonMastery(L);
     var done = L.cons.every(function (c) { return lvl(c) >= 3; });
-    return '<div class="lesson-card panel' + (done ? ' done' : '') + '" data-i="' + i + '">' +
+    return '<div class="lesson-card panel' + (done ? ' done' : '') + '" data-i="' + i + '"' +
+      (altTitle ? ' data-alt="' + altTitle + '"' : '') + '>' +
       '<div class="lc-num mono">' + L.id + '</div>' +
-      '<div class="lc-title">' + L.title + '</div>' +
+      '<div class="lc-title">' + (altTitle || L.title) + '</div>' +
       '<div class="lc-note">' + L.note + '</div>' +
       '<div class="lc-cons">' + L.cons.map(function (c) {
         var l = lvl(c);
@@ -96,23 +101,25 @@ VARDA.learn = (function () {
         '</div>' +
         '<div class="bar"><div class="bar-fill" style="width:' + (um * 100) + '%"></div></div>' +
       '</div><div class="lesson-grid">' +
-        u.lessons.map(lessonCardHTML).join('') +
+        u.lessons.map(function (li) {
+          return lessonCardHTML(li, u.alt && u.alt[li]);
+        }).join('') +
       '</div>';
     });
 
     root.innerHTML = html;
     root.querySelectorAll('.lesson-card').forEach(function (el) {
-      el.onclick = function () { lesson(+el.dataset.i); };
+      el.onclick = function () { lesson(+el.dataset.i, el.dataset.alt || null); };
     });
   }
 
   /* ---------- Lesson (study mode) ---------- */
-  function lesson(i) {
+  function lesson(i, altTitle) {
     var L = VARDA.LESSONS[i];
     var html =
       '<div class="panel lesson-head">' +
         '<button class="btn btn-ghost" id="a-back">\u2190 Academy</button>' +
-        '<div><div class="panel-title">' + L.id + ' \u00B7 ' + L.title + '</div>' +
+        '<div><div class="panel-title">' + L.id + ' \u00B7 ' + (altTitle || L.title) + '</div>' +
         '<div class="panel-sub">' + L.note + '</div></div>' +
         '<button class="btn btn-primary" id="a-quiz">Begin examination \u2192</button>' +
       '</div><div class="study-grid">';
@@ -136,7 +143,7 @@ VARDA.learn = (function () {
     html += '</div>';
     root.innerHTML = html;
     root.querySelector('#a-back').onclick = overview;
-    root.querySelector('#a-quiz').onclick = function () { startQuiz(i); };
+    root.querySelector('#a-quiz').onclick = function () { startQuiz(i, 0, altTitle); };
 
     // render the figures after layout
     requestAnimationFrame(function () {
@@ -156,10 +163,11 @@ VARDA.learn = (function () {
     return a;
   }
 
-  function startQuiz(lessonIdx, stage) {
+  function startQuiz(lessonIdx, stage, altTitle) {
     var L = VARDA.LESSONS[lessonIdx];
     quiz = {
       lesson: lessonIdx,
+      alt: altTitle || null,
       stage: stage || 0,
       queue: shuffle(L.cons),
       total: L.cons.length,
@@ -197,19 +205,20 @@ VARDA.learn = (function () {
           '</div>' +
           '<div class="bar slim"><div class="bar-fill" style="width:' + prog + '%"></div></div>' +
           '<div class="quiz-q">Identify this constellation' +
-            (quiz.stage === 2 ? ' <span class="dim">(stars alone \u2014 no lines)</span>' :
-             quiz.stage === 1 ? ' <span class="dim">(lines only)</span>' : '') + '</div>' +
+            (quiz.stage === 2 ? ' <span class="dim">(as it looks in the real night sky)</span>' :
+             quiz.stage === 1 ? ' <span class="dim">(its stars alone \u2014 no starfield)</span>' : '') + '</div>' +
           '<canvas id="q-canvas" class="quiz-canvas"></canvas>' +
           '<div class="quiz-choices" id="q-choices"></div>' +
           '<div class="quiz-feedback" id="q-feedback"></div>' +
         '</div>' +
       '</div>';
 
-    root.querySelector('#q-exit').onclick = function () { lesson(quiz.lesson); };
+    root.querySelector('#q-exit').onclick = function () { lesson(quiz.lesson, quiz.alt); };
 
     requestAnimationFrame(function () {
-      VARDA.drawConstellationCard(root.querySelector('#q-canvas'), cid, STAGE_KEYS[quiz.stage],
-        { fieldStars: quiz.stage !== 1 });
+      var conf = STAGE_CONF[quiz.stage];
+      VARDA.drawConstellationCard(root.querySelector('#q-canvas'), cid, conf.key,
+        { fieldStars: conf.field, realistic: conf.real });
     });
 
     var box = root.querySelector('#q-choices');
@@ -260,7 +269,7 @@ VARDA.learn = (function () {
       '<div class="quiz-wrap"><div class="panel quiz-panel done-panel">' +
         '<div class="done-glyph">' + (last ? '\u2726' : '\u25C8') + '</div>' +
         '<div class="done-title">' + (last ? 'Lesson mastered' : STAGE_NAMES[quiz.stage] + ' stage cleared') + '</div>' +
-        '<div class="done-sub">' + L.id + ' \u00B7 ' + L.title + ' \u00B7 accuracy ' + acc + '%</div>' +
+        '<div class="done-sub">' + L.id + ' \u00B7 ' + (quiz.alt || L.title) + ' \u00B7 accuracy ' + acc + '%</div>' +
         (allDone ? '<div class="done-note">All eight figures identified from their stars alone. ' +
           (masteredCount() === 88
             ? 'And with that \u2014 <b>the entire sky is yours.</b> All 88 constellations mastered.'
@@ -274,9 +283,9 @@ VARDA.learn = (function () {
       '</div></div>';
 
     root.querySelector('#d-next').onclick = function () {
-      if (last) overview(); else startQuiz(quiz.lesson, quiz.stage + 1);
+      if (last) overview(); else startQuiz(quiz.lesson, quiz.stage + 1, quiz.alt);
     };
-    root.querySelector('#d-back').onclick = function () { lesson(quiz.lesson); };
+    root.querySelector('#d-back').onclick = function () { lesson(quiz.lesson, quiz.alt); };
   }
 
   return { build: build, refresh: function () { if (root && !quiz) overview(); } };

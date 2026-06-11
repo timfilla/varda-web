@@ -1,8 +1,13 @@
 /* ============================================================
-   VARDA — render.js
+   VARDA — render.js (v2)
    Canvas star-chart renderer. Stereographic projection with a
-   proper 3-D camera basis, so horizontal (alt-az) views match
-   what you actually see when you look up.
+   proper 3-D camera basis.
+
+   Below-horizon treatment (horizontal mode), opts.horizonStyle:
+     'veil' — blur + dim everything under the horizon (sky dome)
+     'dim'  — figures, labels, planets and named stars remain,
+              dimmed; the faint background starfield is culled
+              (Explorer's local-sky mode)
    ============================================================ */
 var VARDA = window.VARDA || {};
 
@@ -19,6 +24,7 @@ VARDA.SkyView = function (canvas, opts) {
     fov: opts.fov || 185,
     date: opts.date || new Date(),
     lat: opts.lat || 40, lon: opts.lon || -83,
+    horizonStyle: opts.horizonStyle || 'veil',
     showLines: opts.showLines !== false,
     showConLabels: opts.showConLabels !== false,
     showStarLabels: opts.showStarLabels !== false,
@@ -28,19 +34,20 @@ VARDA.SkyView = function (canvas, opts) {
     interactive: !!opts.interactive,
     onSelect: opts.onSelect || null,
     selected: null,
+    highlight: null,                     // {ra, dec, label} sticky marker
     hits: []
   };
 
   var css = getComputedStyle(document.documentElement);
   function v(name, fallback) { return (css.getPropertyValue(name) || fallback).trim() || fallback; }
   var COL = {
-    skyTop: '#070a14', skyBot: '#0b1020',
-    ground: '#0d1117', groundLine: v('--ion', '#f0b257'),
     line: 'rgba(99,216,200,0.34)', lineHi: 'rgba(99,216,200,0.9)',
     conLabel: 'rgba(99,216,200,0.55)', starLabel: 'rgba(237,242,255,0.78)',
     grid: 'rgba(139,150,181,0.14)', dso: v('--nebula', '#9d8cff'),
-    cardinal: v('--ion', '#f0b257')
+    cardinal: v('--ion', '#f0b257'), horizon: 'rgba(240,178,87,0.55)',
+    highlight: v('--ion', '#f0b257')
   };
+  var DIM_A = 0.34;   // alpha for below-horizon objects in 'dim' style
 
   // ---------- camera ----------
   var cam = null;
@@ -90,14 +97,20 @@ VARDA.SkyView = function (canvas, opts) {
   }
 
   function project(ra, dec) {
-    var p = (self.mode === 'horizontal') ? eqVecToHoriz(ra, dec) : dirEq(ra, dec);
+    var p, below = false;
+    if (self.mode === 'horizontal') {
+      p = eqVecToHoriz(ra, dec);
+      below = p[2] < -0.0087;            // ~half a degree under the horizon
+    } else {
+      p = dirEq(ra, dec);
+    }
     var c = cam;
     var pf = p[0]*c.f[0] + p[1]*c.f[1] + p[2]*c.f[2];
     if (pf < 0.02) return null;
     var pr = p[0]*c.r[0] + p[1]*c.r[1] + p[2]*c.r[2];
     var pu = p[0]*c.u[0] + p[1]*c.u[1] + p[2]*c.u[2];
     var s = 2 / (1 + pf);
-    return { x: c.cx + c.parity * pr * s * c.R, y: c.cy - pu * s * c.R, pf: pf };
+    return { x: c.cx + c.parity * pr * s * c.R, y: c.cy - pu * s * c.R, pf: pf, below: below };
   }
   function projectHoriz(az, alt) {
     var p = dirHoriz(az, alt), c = cam;
@@ -108,6 +121,7 @@ VARDA.SkyView = function (canvas, opts) {
     var s = 2 / (1 + pf);
     return { x: c.cx + c.parity * pr * s * c.R, y: c.cy - pu * s * c.R, pf: pf };
   }
+  function dimming() { return self.mode === 'horizontal' && self.horizonStyle === 'dim'; }
 
   // ---------- drawing ----------
   function starRadius(mag) {
@@ -126,63 +140,125 @@ VARDA.SkyView = function (canvas, opts) {
     return 6.5;
   }
 
-  /* Below-horizon veil: the sky under the horizon stays visible but
-     blurred and dimmed, applied after everything has been drawn. */
-  function applyHorizonVeil(ctx, w, h) {
-    var pts = [], samples = 0;
+  /* Horizon as contiguous runs of projected points. A run breaks when the
+     projection fails (behind camera) or jumps across the screen — this is
+     what prevents the spurious straight chord across the view. */
+  function horizonRuns(w, h) {
+    var runs = [], cur = [], projected = 0, samples = 0;
+    var jump = Math.max(w, h) * 0.45;
     for (var az = 0; az <= 360; az += 2) {
       samples++;
       var p = projectHoriz(az, 0);
-      if (p) pts.push(p);
+      if (p) {
+        projected++;
+        if (cur.length) {
+          var prev = cur[cur.length - 1];
+          if (Math.hypot(p.x - prev.x, p.y - prev.y) > jump) { runs.push(cur); cur = []; }
+        }
+        cur.push(p);
+      } else if (cur.length) { runs.push(cur); cur = []; }
     }
-    var full = pts.length >= samples - 1;   // entire horizon circle in view
+    if (cur.length) runs.push(cur);
+    // stitch the az=360/az=0 wraparound if both ends are visible
+    if (runs.length > 1) {
+      var first = runs[0], last = runs[runs.length - 1];
+      var a = last[last.length - 1], b = first[0];
+      if (Math.hypot(a.x - b.x, a.y - b.y) < jump * 0.2) {
+        runs[0] = last.concat(first);
+        runs.pop();
+      }
+    }
+    return { runs: runs, full: projected >= samples - 1 && runs.length === 1 };
+  }
+
+  function strokeHorizon(ctx, hr) {
+    ctx.save();
+    ctx.strokeStyle = COL.horizon;
+    ctx.lineWidth = 1.5;
+    hr.runs.forEach(function (run) {
+      if (run.length < 2) return;
+      ctx.beginPath();
+      run.forEach(function (p, i) { i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+      if (hr.full) ctx.closePath();
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  /* 'veil' style: blur + dim everything below the horizon. */
+  function applyHorizonVeil(ctx, w, h, hr) {
     var c = self.canvas;
 
-    if (pts.length > 1 || self.center.alt < 0) {
-      // snapshot current render for the blurred copy
+    function snapshot() {
       var off = document.createElement('canvas');
       off.width = c.width; off.height = c.height;
       off.getContext('2d').drawImage(c, 0, 0);
+      return off;
+    }
 
+    if (hr.full) {
+      var off = snapshot();
       ctx.save();
       ctx.beginPath();
-      if (full) {
-        ctx.rect(-10, -10, w + 20, h + 20);
-        pts.forEach(function (p, i) { i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
-        ctx.closePath();
-        ctx.clip('evenodd');                 // region OUTSIDE the horizon circle
-      } else if (pts.length > 1) {
-        var seg = pts.slice().sort(function (a, b) { return a.x - b.x; });
-        ctx.moveTo(seg[0].x - 400, seg[0].y);
-        seg.forEach(function (p) { ctx.lineTo(p.x, p.y); });
-        ctx.lineTo(seg[seg.length - 1].x + 400, seg[seg.length - 1].y);
-        ctx.lineTo(w + 450, h + 450);
-        ctx.lineTo(-450, h + 450);
-        ctx.closePath();
-        ctx.clip();                          // region below the horizon curve
-      } else {
-        ctx.rect(0, 0, w, h);                // horizon out of frame, all below
-        ctx.clip();
+      ctx.rect(-10, -10, w + 20, h + 20);
+      hr.runs[0].forEach(function (p, i) { i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+      ctx.closePath();
+      ctx.clip('evenodd');                 // region OUTSIDE the horizon circle
+      veilFill(ctx, off, w, h);
+      ctx.restore();
+      return;
+    }
+
+    var run = null;
+    if (hr.runs.length) {
+      run = hr.runs.reduce(function (a, b) { return b.length > a.length ? b : a; });
+      if (run.length < 4) run = null;
+    }
+
+    if (!run) {
+      // horizon not meaningfully in view: veil everything only if looking down
+      if (self.center.alt < -5) {
+        var offD = snapshot();
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
+        veilFill(ctx, offD, w, h);
+        ctx.restore();
       }
-      try { ctx.filter = 'blur(3.5px)'; } catch (e) {}
-      ctx.drawImage(off, 0, 0, w, h);
-      try { ctx.filter = 'none'; } catch (e) {}
-      ctx.fillStyle = 'rgba(5,8,15,0.55)';
-      ctx.fillRect(-450, -450, w + 900, h + 900);
-      ctx.restore();
+      return;
     }
 
-    // crisp horizon line on top
-    if (pts.length > 1) {
-      ctx.save();
-      ctx.beginPath();
-      pts.forEach(function (p, i) { i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
-      if (full) ctx.closePath();
-      ctx.strokeStyle = 'rgba(240,178,87,0.55)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.restore();
+    // reference point safely below the horizon, to know which side to fill
+    var D = null, alts = [-12, -25, -45, -70];
+    for (var i = 0; i < alts.length && !D; i++) D = projectHoriz(self.center.az, alts[i]);
+    if (!D) return;
+
+    var off3 = snapshot();
+    var a0 = run[0], a1 = run[1], b1 = run[run.length - 2], b0 = run[run.length - 1];
+    function ext(p, q) {  // extend p away from q by 2500px
+      var dx = p.x - q.x, dy = p.y - q.y, l = Math.hypot(dx, dy) || 1;
+      return { x: p.x + dx / l * 2500, y: p.y + dy / l * 2500 };
     }
+    var mid = run[Math.floor(run.length / 2)];
+    var dl = Math.hypot(D.x - mid.x, D.y - mid.y) || 1;
+    var F = { x: mid.x + (D.x - mid.x) / dl * 4000, y: mid.y + (D.y - mid.y) / dl * 4000 };
+    ctx.save();
+    ctx.beginPath();
+    var e0 = ext(a0, a1), e1 = ext(b0, b1);
+    ctx.moveTo(e0.x, e0.y);
+    run.forEach(function (p) { ctx.lineTo(p.x, p.y); });
+    ctx.lineTo(e1.x, e1.y);
+    ctx.lineTo(F.x, F.y);
+    ctx.closePath();
+    ctx.clip();
+    veilFill(ctx, off3, w, h);
+    ctx.restore();
+  }
+
+  function veilFill(ctx, off, w, h) {
+    try { ctx.filter = 'blur(3.5px)'; } catch (e) {}
+    ctx.drawImage(off, 0, 0, w, h);
+    try { ctx.filter = 'none'; } catch (e) {}
+    ctx.fillStyle = 'rgba(5,8,15,0.55)';
+    ctx.fillRect(-450, -450, w + 900, h + 900);
   }
 
   function drawCardinals(ctx) {
@@ -238,30 +314,46 @@ VARDA.SkyView = function (canvas, opts) {
   }
 
   function drawConstellations(ctx) {
+    var dim = dimming();
     ctx.save();
-    ctx.lineWidth = 1.1;
     ctx.lineJoin = 'round';
     Object.keys(VARDA.CON_GEO).forEach(function (cid) {
       var c = VARDA.CON_GEO[cid];
       var hi = self.selected && self.selected.kind === 'con' && self.selected.id === cid;
-      ctx.strokeStyle = hi ? COL.lineHi : COL.line;
-      ctx.lineWidth = hi ? 1.8 : 1.1;
+      var above = [], below = [];
       c.lines.forEach(function (seg) {
-        ctx.beginPath(); var st = false;
-        for (var i = 0; i < seg.length; i++) {
-          var p = project(seg[i][0], seg[i][1]);
-          if (p) { st ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); st = true; }
-          else st = false;
-        }
-        ctx.stroke();
+        var prev = null;
+        seg.forEach(function (pt) {
+          var p = project(pt[0], pt[1]);
+          if (p && prev) {
+            ((dim && p.below && prev.below) ? below : above).push([prev, p]);
+          }
+          prev = p;
+        });
       });
+      ctx.lineWidth = hi ? 1.8 : 1.1;
+      ctx.strokeStyle = hi ? COL.lineHi : COL.line;
+      if (above.length) {
+        ctx.beginPath();
+        above.forEach(function (pr) { ctx.moveTo(pr[0].x, pr[0].y); ctx.lineTo(pr[1].x, pr[1].y); });
+        ctx.stroke();
+      }
+      if (below.length) {
+        ctx.globalAlpha = DIM_A;
+        ctx.beginPath();
+        below.forEach(function (pr) { ctx.moveTo(pr[0].x, pr[0].y); ctx.lineTo(pr[1].x, pr[1].y); });
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
       if (self.showConLabels && self.fov < 160) {
         var lp = project(c.label[0], c.label[1]);
         if (lp) {
           ctx.font = '600 10.5px Michroma, sans-serif';
           ctx.fillStyle = hi ? COL.lineHi : COL.conLabel;
           ctx.textAlign = 'center';
+          ctx.globalAlpha = (dim && lp.below) ? 0.42 : 1;
           ctx.fillText(c.name.toUpperCase(), lp.x, lp.y);
+          ctx.globalAlpha = 1;
           if (self.interactive) self.hits.push({ x: lp.x, y: lp.y, r: 26,
             obj: { kind: 'con', id: cid, name: c.name, ra: c.label[0], dec: c.label[1] } });
         }
@@ -271,7 +363,7 @@ VARDA.SkyView = function (canvas, opts) {
   }
 
   function drawStars(ctx) {
-    var lim = magLimit(), labLim = labelMagLimit();
+    var lim = magLimit(), labLim = labelMagLimit(), dim = dimming();
     var stars = VARDA.STARS;
     ctx.save();
     for (var i = 0; i < stars.length; i++) {
@@ -279,10 +371,13 @@ VARDA.SkyView = function (canvas, opts) {
       if (s[2] > lim) break; // sorted by magnitude
       var p = project(s[0], s[1]);
       if (!p) continue;
+      var under = dim && p.below;
+      if (under && !s[4]) continue;       // no background starfield under the horizon
       var r = starRadius(s[2]);
+      ctx.globalAlpha = under ? DIM_A : 1;
       ctx.beginPath();
       ctx.fillStyle = A.bvColor(s[3]);
-      if (s[2] < 1.2) {
+      if (s[2] < 1.2 && !under) {
         ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 7;
       } else ctx.shadowBlur = 0;
       ctx.arc(p.x, p.y, r, 0, 6.2832);
@@ -298,6 +393,7 @@ VARDA.SkyView = function (canvas, opts) {
           ctx.fillText(s[4], p.x + r + 3, p.y + 3);
         }
       }
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
   }
@@ -325,6 +421,7 @@ VARDA.SkyView = function (canvas, opts) {
 
   function drawDSOs(ctx) {
     if (self.fov > 140) return;
+    var dim = dimming();
     ctx.save();
     var maxRank = self.fov > 70 ? 2 : 5;
     VARDA.DSOS.forEach(function (d) {
@@ -332,6 +429,7 @@ VARDA.SkyView = function (canvas, opts) {
       if (g.rank > maxRank) return;
       var p = project(d.ra, d.dec);
       if (!p) return;
+      ctx.globalAlpha = (dim && p.below) ? DIM_A : 1;
       dsoIcon(ctx, p, d);
       if (self.interactive) self.hits.push({ x: p.x, y: p.y, r: 10,
         obj: { kind: 'dso', id: d.id, name: d.name || d.id, tname: d.tname, mag: d.mag,
@@ -342,16 +440,20 @@ VARDA.SkyView = function (canvas, opts) {
         ctx.textAlign = 'left';
         ctx.fillText(d.name || d.id, p.x + 7, p.y + 3);
       }
+      ctx.globalAlpha = 1;
     });
     ctx.restore();
   }
 
   function drawSolar(ctx, jd) {
+    var dim = dimming();
     ctx.save();
+    function alphaFor(p) { return (dim && p.below) ? 0.45 : 1; }
     // Sun
     var s = A.sun(jd);
     var sp = project(s.ra, s.dec);
     if (sp) {
+      ctx.globalAlpha = alphaFor(sp);
       ctx.beginPath();
       ctx.fillStyle = '#fff3c4';
       ctx.shadowColor = '#ffd76b'; ctx.shadowBlur = 18;
@@ -359,6 +461,7 @@ VARDA.SkyView = function (canvas, opts) {
       ctx.shadowBlur = 0;
       ctx.font = '11px "Space Grotesk"'; ctx.fillStyle = '#ffe9a8';
       ctx.fillText('Sun', sp.x + 12, sp.y + 4);
+      ctx.globalAlpha = 1;
       if (self.interactive) self.hits.push({ x: sp.x, y: sp.y, r: 14,
         obj: { kind: 'sun', name: 'Sun', ra: s.ra, dec: s.dec } });
     }
@@ -366,6 +469,7 @@ VARDA.SkyView = function (canvas, opts) {
     var m = A.moon(jd), ph = A.moonPhase(jd);
     var mp = project(m.ra, m.dec);
     if (mp) {
+      ctx.globalAlpha = alphaFor(mp);
       ctx.beginPath();
       ctx.fillStyle = '#e8ecf5';
       ctx.shadowColor = '#cdd6e8'; ctx.shadowBlur = 10;
@@ -386,6 +490,7 @@ VARDA.SkyView = function (canvas, opts) {
       ctx.fill();
       ctx.font = '11px "Space Grotesk"'; ctx.fillStyle = '#dfe6f5';
       ctx.fillText('Moon', mp.x + 11, mp.y + 4);
+      ctx.globalAlpha = 1;
       if (self.interactive) self.hits.push({ x: mp.x, y: mp.y, r: 13,
         obj: { kind: 'moon', name: 'Moon', ra: m.ra, dec: m.dec, detail: ph.name } });
     }
@@ -395,6 +500,7 @@ VARDA.SkyView = function (canvas, opts) {
     A.allPlanets(jd).forEach(function (pl) {
       var p = project(pl.ra, pl.dec);
       if (!p) return;
+      ctx.globalAlpha = alphaFor(p);
       var r = Math.max(2.6, 5.5 - pl.mag * 0.7);
       ctx.beginPath();
       ctx.fillStyle = PCOL[pl.name];
@@ -404,9 +510,41 @@ VARDA.SkyView = function (canvas, opts) {
       ctx.font = '10.5px "Space Grotesk"';
       ctx.fillStyle = PCOL[pl.name];
       ctx.fillText(pl.name, p.x + 8, p.y + 4);
+      ctx.globalAlpha = 1;
       if (self.interactive) self.hits.push({ x: p.x, y: p.y, r: 12,
         obj: { kind: 'planet', name: pl.name, mag: pl.mag, ra: pl.ra, dec: pl.dec } });
     });
+    ctx.restore();
+  }
+
+  function drawHighlight(ctx) {
+    var hl = self.highlight;
+    if (!hl) return;
+    var p = project(hl.ra, hl.dec);
+    if (!p) return;
+    ctx.save();
+    ctx.strokeStyle = COL.highlight;
+    ctx.lineWidth = 1.6;
+    var r = 14;
+    // four arc segments — a targeting reticle, not a closed circle
+    [0.25, 1.82, 3.39, 4.96].forEach(function (a0) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, a0, a0 + 1.05);
+      ctx.stroke();
+    });
+    // tick marks
+    ctx.beginPath();
+    [[0, -1], [0, 1], [-1, 0], [1, 0]].forEach(function (d) {
+      ctx.moveTo(p.x + d[0] * (r + 3), p.y + d[1] * (r + 3));
+      ctx.lineTo(p.x + d[0] * (r + 8), p.y + d[1] * (r + 8));
+    });
+    ctx.stroke();
+    if (hl.label) {
+      ctx.font = '600 11px Michroma, sans-serif';
+      ctx.fillStyle = COL.highlight;
+      ctx.textAlign = 'center';
+      ctx.fillText(hl.label.toUpperCase(), p.x, p.y + r + 22);
+    }
     ctx.restore();
   }
 
@@ -438,9 +576,12 @@ VARDA.SkyView = function (canvas, opts) {
     if (self.showPlanets) drawSolar(ctx, jd);
 
     if (self.mode === 'horizontal') {
-      applyHorizonVeil(ctx, w, h);
+      var hr = horizonRuns(w, h);
+      if (self.horizonStyle === 'veil') applyHorizonVeil(ctx, w, h, hr);
+      strokeHorizon(ctx, hr);
       drawCardinals(ctx);
     }
+    drawHighlight(ctx);
   };
 
   // ---------- interaction ----------
@@ -498,7 +639,10 @@ VARDA.SkyView = function (canvas, opts) {
 
 /* ============================================================
    Constellation card renderer (Academy lessons & quizzes).
-   stage: 'figure' | 'lines' | 'stars'
+   stage: 'figure' (lines + figure stars) | 'stars' (figure stars)
+   opts.fieldStars — include the surrounding background starfield
+   opts.realistic  — real-sky stage: natural field, figure stars
+                     only gently emphasized
    ============================================================ */
 VARDA.drawConstellationCard = function (canvas, conId, stage, opts) {
   opts = opts || {};
@@ -558,29 +702,30 @@ VARDA.drawConstellationCard = function (canvas, conId, stage, opts) {
   ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
   ctx.restore();
 
-  // surrounding field stars (context for 'figure' and 'stars' stages)
-  if (opts.fieldStars !== false) {
+  // surrounding field stars
+  if (opts.fieldStars) {
+    var fieldLim = opts.realistic ? 6.0 : 5.6;
     VARDA.STARS.forEach(function (s) {
-      if (s[2] > 5.6) return;
+      if (s[2] > fieldLim) return;
       var p = prj(s[0], s[1]);
       if (!p || p.x < -5 || p.y < -5 || p.x > w + 5 || p.y > h + 5) return;
       var rr = Math.max(0.5, (6.4 - s[2]) * 0.66);
       ctx.beginPath();
       ctx.fillStyle = A.bvColor(s[3]);
-      if (s[2] < 1.5) { ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 6; } else ctx.shadowBlur = 0;
+      if (s[2] < 1.5 && !opts.realistic) { ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 6; }
+      else ctx.shadowBlur = 0;
       ctx.arc(p.x, p.y, rr, 0, 6.2832);
       ctx.fill();
     });
     ctx.shadowBlur = 0;
   }
 
-  if (stage !== 'stars') {
-    // figure lines
+  if (stage === 'figure') {
     ctx.save();
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = stage === 'figure' ? 'rgba(99,216,200,0.85)' : 'rgba(99,216,200,0.6)';
-    ctx.lineWidth = stage === 'figure' ? 2 : 1.4;
-    if (stage === 'figure') { ctx.shadowColor = 'rgba(99,216,200,0.7)'; ctx.shadowBlur = 8; }
+    ctx.strokeStyle = 'rgba(99,216,200,0.85)';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(99,216,200,0.7)'; ctx.shadowBlur = 8;
     con.lines.forEach(function (seg) {
       ctx.beginPath(); var st = false;
       seg.forEach(function (pt) {
@@ -592,8 +737,8 @@ VARDA.drawConstellationCard = function (canvas, conId, stage, opts) {
     ctx.restore();
   }
 
-  // The figure's own stars, drawn in every stage. Each line vertex is a real
-  // star: match it to the catalog for true brightness and color.
+  // The figure's own stars, in every stage. Each line vertex is a real star:
+  // match it to the catalog for true brightness and color.
   (function drawVertexStars() {
     var seen = {};
     verts.forEach(function (vtx) {
@@ -615,10 +760,18 @@ VARDA.drawConstellationCard = function (canvas, conId, stage, opts) {
       }
       var mag = best ? best[2] : 4.6;
       var col = best ? A.bvColor(best[3]) : '#dfe6f5';
-      var rr = Math.max(1.1, (6.4 - mag) * 0.72);
+      var rr, glow;
+      if (opts.realistic) {
+        // real-sky stage: gentle emphasis only — slightly larger, soft glow
+        rr = Math.max(0.9, (6.4 - mag) * 0.78);
+        glow = mag < 3.8 ? 5 : 3;
+      } else {
+        rr = Math.max(1.1, (6.4 - mag) * 0.72);
+        glow = mag < 1.8 ? 7 : 0;
+      }
       ctx.beginPath();
       ctx.fillStyle = col;
-      if (mag < 1.8) { ctx.shadowColor = col; ctx.shadowBlur = 7; } else ctx.shadowBlur = 0;
+      ctx.shadowColor = col; ctx.shadowBlur = glow;
       ctx.arc(p.x, p.y, rr, 0, 6.2832);
       ctx.fill();
     });

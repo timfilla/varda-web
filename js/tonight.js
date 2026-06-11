@@ -11,6 +11,8 @@ VARDA.tonight = (function () {
   var gearSel = { 0: true, 1: true, 2: true, 3: true, 4: true, 5: true };
   var shown = {};
   var PAGE = 15;
+  var pin = null;          // sticky highlight: {ra, dec, label}
+  var lastArrs = {};       // arrays as last rendered, for search reveal
   function fmt4(v) { return (+v).toFixed(4); }
 
   var CITIES = [
@@ -22,6 +24,19 @@ VARDA.tonight = (function () {
     ['Tokyo, Japan', 35.68, 139.69], ['Sydney, Australia', -33.87, 151.21],
     ['Cape Town, South Africa', -33.92, 18.42], ['S\u00E3o Paulo, Brazil', -23.55, -46.63]
   ];
+
+  function parseCoords(str) {
+    var m = String(str).match(/-?\d+(?:\.\d+)?/g);
+    if (!m || m.length < 2) return null;
+    var lat = parseFloat(m[0]), lon = parseFloat(m[1]);
+    if (!isFinite(lat) || !isFinite(lon)) return null;
+    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    return [lat, lon];
+  }
+  function setCoordsBox() {
+    root.querySelector('#t-coords').value =
+      fmt4(VARDA.state.lat) + ', ' + fmt4(VARDA.state.lon);
+  }
 
   function el(tag, cls, html) {
     var e = document.createElement(tag);
@@ -46,6 +61,12 @@ VARDA.tonight = (function () {
         '<section class="panel controls-panel">' +
           '<div class="panel-head"><span class="panel-title">Observation Parameters</span></div>' +
           '<div class="ctl-grid">' +
+            '<label class="ctl-lab">Search</label>' +
+            '<div class="ctl-row search-wrap">' +
+              '<input id="t-search" class="input" type="text" placeholder="Star, planet, constellation, M 31\u2026" autocomplete="off">' +
+              '<div id="t-dd" class="search-dd hidden"></div>' +
+            '</div>' +
+            '<div class="search-msg" id="t-search-msg"></div>' +
             '<label class="ctl-lab">Site</label>' +
             '<div class="ctl-row">' +
               '<select id="t-city" class="input"></select>' +
@@ -53,8 +74,8 @@ VARDA.tonight = (function () {
             '</div>' +
             '<label class="ctl-lab">Coordinates</label>' +
             '<div class="ctl-row">' +
-              '<input id="t-lat" class="input input-s" type="number" step="0.0001" min="-90" max="90"> ' +
-              '<input id="t-lon" class="input input-s" type="number" step="0.0001" min="-180" max="180">' +
+              '<input id="t-coords" class="input" type="text" placeholder="39.9612, -82.9988" ' +
+                'title="Latitude, longitude \u2014 paste straight from Google Maps" autocomplete="off">' +
             '</div>' +
             '<label class="ctl-lab">Time</label>' +
             '<div class="ctl-row">' +
@@ -83,24 +104,29 @@ VARDA.tonight = (function () {
     sel.onchange = function () {
       if (sel.value === '' || sel.selectedIndex === 0) return;
       var c = CITIES[+sel.value];
-      root.querySelector('#t-lat').value = fmt4(c[1]);
-      root.querySelector('#t-lon').value = fmt4(c[2]);
+      VARDA.state.lat = c[1]; VARDA.state.lon = c[2];
+      setCoordsBox();
       VARDA.state.locName = c[0];
       apply();
     };
 
-    root.querySelector('#t-lat').value = fmt4(VARDA.state.lat);
-    root.querySelector('#t-lon').value = fmt4(VARDA.state.lon);
-    root.querySelector('#t-lat').onchange = root.querySelector('#t-lon').onchange = function () {
-      sel.selectedIndex = 0; VARDA.state.locName = 'Custom site'; apply();
+    setCoordsBox();
+    root.querySelector('#t-coords').onchange = function () {
+      var c = parseCoords(this.value);
+      if (c) {
+        VARDA.state.lat = c[0]; VARDA.state.lon = c[1];
+        sel.selectedIndex = 0; VARDA.state.locName = 'Custom site';
+      }
+      apply();   // re-normalizes the box either way
     };
 
     root.querySelector('#t-geo').onclick = function () {
       var btn = this; btn.textContent = '\u2026';
       if (!navigator.geolocation) { btn.textContent = 'Unavailable'; return; }
       navigator.geolocation.getCurrentPosition(function (p) {
-        root.querySelector('#t-lat').value = fmt4(p.coords.latitude);
-        root.querySelector('#t-lon').value = fmt4(p.coords.longitude);
+        VARDA.state.lat = +p.coords.latitude;
+        VARDA.state.lon = +p.coords.longitude;
+        setCoordsBox();
         sel.selectedIndex = 0;
         VARDA.state.locName = 'My location';
         btn.innerHTML = '\u25CE Locate';
@@ -144,7 +170,43 @@ VARDA.tonight = (function () {
     dome = VARDA.SkyView(root.querySelector('#t-dome'), {
       mode: 'horizontal', center: { az: 180, alt: 89.9 }, fov: 185,
       interactive: true, showGrid: false, showStarLabels: true,
-      onSelect: function (o) { if (o) flashSelection(o); }
+      onSelect: function (o) {
+        if (o) {
+          setPin({ ra: o.ra, dec: o.dec, label: o.name || o.id });
+          var r = findRow(o.name || o.id);
+          if (r) r.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } else setPin(null);
+      }
+    });
+
+    VARDA.attachSearch(root.querySelector('#t-search'), root.querySelector('#t-dd'), function (entry) {
+      var when = VARDA.state.when || new Date();
+      var res = VARDA.catalog.resolveEntry(entry, when, VARDA.state.lat, VARDA.state.lon);
+      var msg = root.querySelector('#t-search-msg');
+      if (!res.visible) {
+        msg.innerHTML = '<span class="err">\u26A0 ' + entry.label + ' is not visible at this time.</span>';
+        setPin(null);
+        return;
+      }
+      setPin({ ra: res.ra, dec: res.dec, label: entry.label });
+      var keyByKind = { moon: 'solar', sun: 'solar', planet: 'solar',
+                        star: 'stars', con: 'cons', dso: 'dsos' };
+      var key = keyByKind[entry.kind];
+      var arr = lastArrs[key] || [];
+      var at = -1;
+      for (var i = 0; i < arr.length; i++) {
+        var o = arr[i];
+        if ((o.name || o.id) === entry.label || (entry.id && o.id === entry.id)) { at = i; break; }
+      }
+      if (at < 0) {
+        msg.innerHTML = '<span class="dim">Visible \u2014 pinned on the dome (not shown in the list).</span>';
+        return;
+      }
+      msg.textContent = '';
+      shown[key] = Math.max(shown[key] || PAGE, Math.ceil((at + 1) / PAGE) * PAGE);
+      renderList();
+      var rowEl = findRow(entry.label);
+      if (rowEl) rowEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
 
     var fsWrap = root.querySelector('#t-dome-wrap');
@@ -164,10 +226,22 @@ VARDA.tonight = (function () {
     }, 60000);
   }
 
-  function flashSelection(o) {
-    var row = root.querySelector('[data-obj="' + (o.name || o.id) + '"]');
-    if (row) { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.add('flash');
-      setTimeout(function () { row.classList.remove('flash'); }, 1600); }
+  function findRow(label) {
+    var rows = root.querySelectorAll('.obj-row');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.obj === label) return rows[i];
+    }
+    return null;
+  }
+  function markPinned() {
+    root.querySelectorAll('.obj-row').forEach(function (r) {
+      r.classList.toggle('pinned', !!pin && r.dataset.obj === pin.label);
+    });
+  }
+  function setPin(o) {
+    pin = o;
+    if (dome) { dome.highlight = o ? { ra: o.ra, dec: o.dec, label: o.label } : null; dome.draw(); }
+    markPinned();
   }
 
   function syncWhenInput() {
@@ -178,12 +252,12 @@ VARDA.tonight = (function () {
   }
 
   function apply() {
-    var lat = parseFloat(root.querySelector('#t-lat').value);
-    var lon = parseFloat(root.querySelector('#t-lon').value);
-    if (isFinite(lat)) VARDA.state.lat = Math.max(-90, Math.min(90, lat));
-    if (isFinite(lon)) VARDA.state.lon = Math.max(-180, Math.min(180, lon));
-    root.querySelector('#t-lat').value = fmt4(VARDA.state.lat);
-    root.querySelector('#t-lon').value = fmt4(VARDA.state.lon);
+    var c = parseCoords(root.querySelector('#t-coords').value);
+    if (c) {
+      VARDA.state.lat = Math.max(-90, Math.min(90, c[0]));
+      VARDA.state.lon = Math.max(-180, Math.min(180, c[1]));
+    }
+    setCoordsBox();
     shown = {};
     VARDA.saveState();
 
@@ -191,6 +265,7 @@ VARDA.tonight = (function () {
     data = C.visibleAt(when, VARDA.state.lat, VARDA.state.lon);
 
     dome.date = when; dome.lat = VARDA.state.lat; dome.lon = VARDA.state.lon;
+    dome.highlight = pin ? { ra: pin.ra, dec: pin.dec, label: pin.label } : null;
     dome.draw();
 
     var m = data.meta;
@@ -231,7 +306,8 @@ VARDA.tonight = (function () {
 
   function row(o, name, sub) {
     var low = o.alt < 15 ? ' <span class="low" title="Low on the horizon — needs an open view">low</span>' : '';
-    return '<div class="obj-row" data-obj="' + (o.name || o.id) + '">' +
+    return '<div class="obj-row" data-obj="' + (o.name || o.id) +
+      '" data-ra="' + o.ra.toFixed(3) + '" data-dec="' + o.dec.toFixed(3) + '">' +
       '<div class="obj-main"><span class="obj-name">' + name + '</span>' +
       (sub ? '<span class="obj-sub">' + sub + '</span>' : '') + '</div>' +
       '<div class="obj-side">' + azaltStr(o) + low + ' ' + gearTag(o.gear) + '</div></div>';
@@ -259,20 +335,24 @@ VARDA.tonight = (function () {
     }
 
     var solar = data.solar.filter(f);
+    lastArrs.solar = solar;
     html += section('solar', 'Solar System', solar, function (o) {
       return row(o, (o.glyph ? o.glyph + ' ' : '') + o.name, o.detail);
     });
     var stars = data.stars.filter(f);
+    lastArrs.stars = stars;
     html += section('stars', 'Bright Named Stars', stars, function (o) {
       return row(o, o.name, o.detail);
     });
     var cons = data.constellations;
+    lastArrs.cons = cons;
     html += section('cons', 'Constellations', cons, function (o) {
       var lore = VARDA.LORE[o.id];
       return row(o, (lore ? lore.sym + ' ' : '') + o.name,
         (VARDA.CON_GEO[o.id].en !== o.name ? VARDA.CON_GEO[o.id].en + ' \u00B7 ' : '') + o.placing);
     });
     var dsos = data.dsos.filter(f);
+    lastArrs.dsos = dsos;
     html += section('dsos', 'Deep Sky', dsos, function (o) {
       return row(o, o.name, o.detail);
     });
@@ -290,6 +370,24 @@ VARDA.tonight = (function () {
         renderList();
       };
     });
+
+    // hover previews on the dome; click pins (one at a time)
+    L.querySelectorAll('.obj-row').forEach(function (r) {
+      var obj = { ra: +r.dataset.ra, dec: +r.dataset.dec, label: r.dataset.obj };
+      r.addEventListener('mouseenter', function () {
+        if (pin) return;
+        dome.highlight = obj; dome.draw();
+      });
+      r.addEventListener('mouseleave', function () {
+        if (pin) return;
+        dome.highlight = null; dome.draw();
+      });
+      r.addEventListener('click', function () {
+        if (pin && pin.label === obj.label) setPin(null);
+        else setPin(obj);
+      });
+    });
+    markPinned();
   }
 
   // ---------- printable report ----------

@@ -19,6 +19,10 @@ VARDA.explorer = (function () {
             '<span class="panel-sub">drag to pan \u00B7 scroll to zoom \u00B7 click objects</span>' +
           '</div>' +
           '<div class="exp-toolbar">' +
+            '<div class="search-wrap exp-search">' +
+              '<input id="x-search" class="input" type="text" placeholder="Find object\u2026" autocomplete="off">' +
+              '<div id="x-dd" class="search-dd hidden"></div>' +
+            '</div>' +
             '<div class="seg" id="x-mode">' +
               '<button data-m="horizontal" class="on">Local sky</button>' +
               '<button data-m="equatorial">Star chart</button>' +
@@ -44,6 +48,7 @@ VARDA.explorer = (function () {
 
     view = VARDA.SkyView(root.querySelector('#x-canvas'), {
       mode: 'horizontal', center: { az: 180, alt: 45 }, fov: 110,
+      horizonStyle: 'dim',
       interactive: true, showGrid: false,
       lat: VARDA.state.lat, lon: VARDA.state.lon,
       onSelect: showCard
@@ -107,6 +112,18 @@ VARDA.explorer = (function () {
       view.center = view.mode === 'horizontal' ? { az: 180, alt: 45 } : { ra: 90, dec: 20 };
       view.draw();
     };
+
+    VARDA.attachSearch(root.querySelector('#x-search'), root.querySelector('#x-dd'), function (entry) {
+      var res = VARDA.catalog.resolveEntry(entry, view.date, view.lat, view.lon);
+      view.highlight = { ra: res.ra, dec: res.dec, label: entry.label };
+      if (view.mode === 'horizontal') {
+        view.center = { az: res.az, alt: Math.max(-20, res.alt) };
+      } else {
+        view.center = { ra: res.ra, dec: res.dec };
+      }
+      if (view.fov > 70) view.fov = 70;
+      view.draw();
+    });
 
     var fsWrap = root.querySelector('.exp-canvas-wrap');
     root.querySelector('#x-fs').onclick = function () {

@@ -163,7 +163,55 @@ VARDA.catalog = (function () {
     return out;
   }
 
+  /* ---------- search ---------- */
+  var sIndex = null;
+  function searchIndex() {
+    if (sIndex) return sIndex;
+    sIndex = [];
+    sIndex.push({ label: 'Moon', sub: 'Solar system', kind: 'moon', q: 'moon' });
+    sIndex.push({ label: 'Sun', sub: 'Solar system \u00B7 daytime only', kind: 'sun', q: 'sun' });
+    ['Mercury','Venus','Mars','Jupiter','Saturn','Uranus','Neptune'].forEach(function (n) {
+      sIndex.push({ label: n, sub: 'Planet', kind: 'planet', q: n.toLowerCase() });
+    });
+    VARDA.STARS.forEach(function (s) {
+      if (!s[4]) return;
+      var conN = s[5] && VARDA.CON_GEO[s[5]] ? VARDA.CON_GEO[s[5]].name : '';
+      sIndex.push({ label: s[4], sub: 'Star \u00B7 mag ' + s[2].toFixed(1) + (conN ? ' \u00B7 ' + conN : ''),
+                    kind: 'star', ra: s[0], dec: s[1], mag: s[2],
+                    q: (s[4] + ' ' + (s[6] || '')).toLowerCase() });
+    });
+    Object.keys(VARDA.CON_GEO).forEach(function (cid) {
+      var c = VARDA.CON_GEO[cid];
+      sIndex.push({ label: c.name, sub: 'Constellation' + (c.en !== c.name ? ' \u00B7 ' + c.en : ''),
+                    kind: 'con', id: cid, ra: c.label[0], dec: c.label[1],
+                    q: (c.name + ' ' + c.en).toLowerCase() });
+    });
+    VARDA.DSOS.forEach(function (d) {
+      var spaced = d.id.replace(/^([A-Za-z]+)\s?(\d+)$/, '$1 $2');   // M31 -> M 31
+      var fused = d.id.replace(/\s+/g, '');                          // NGC 224 -> NGC224
+      sIndex.push({ label: d.name || d.id, sub: d.tname + ' \u00B7 ' + d.id + ' \u00B7 mag ' + d.mag.toFixed(1),
+                    kind: 'dso', id: d.id, ra: d.ra, dec: d.dec,
+                    q: ((d.name || '') + ' ' + d.id + ' ' + spaced + ' ' + fused).toLowerCase() });
+    });
+    return sIndex;
+  }
+
+  /* Resolve a search entry to current position + visibility at date/place. */
+  function resolveEntry(e, date, lat, lon) {
+    var jd = A.julianDate(date);
+    var ra = e.ra, dec = e.dec, minAlt = 4;
+    if (e.kind === 'moon') { var m = A.moon(jd); ra = m.ra; dec = m.dec; minAlt = 0; }
+    else if (e.kind === 'sun') { var s = A.sun(jd); ra = s.ra; dec = s.dec; minAlt = 0; }
+    else if (e.kind === 'planet') { var p = A.planet(e.label, jd); ra = p.ra; dec = p.dec; minAlt = 0; }
+    else if (e.kind === 'con') minAlt = 10;
+    else if (e.kind === 'dso') minAlt = 12;
+    var pos = A.altAz(ra, dec, jd, lat, lon);
+    return { ra: ra, dec: dec, alt: pos.alt, az: pos.az,
+             visible: pos.alt > minAlt, label: e.label, kind: e.kind };
+  }
+
   return { GEAR: GEAR, visibleAt: visibleAt, gearForDSO: gearForDSO,
            gearForStarMag: gearForStarMag, brightestIn: brightestIn,
-           getListStars: getListStars };
+           getListStars: getListStars,
+           searchIndex: searchIndex, resolveEntry: resolveEntry };
 })();

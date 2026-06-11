@@ -118,7 +118,7 @@ VARDA.app = (function () {
     $('#st-lst').textContent = A.fmtRA(lst);
     $('#st-sky').textContent = sky.label.toUpperCase();
     $('#st-sky').className = 'st-val sky-' + sky.key;
-    $('#st-moon').textContent = ph.glyph + ' ' + Math.round(ph.illumination * 100) + '%';
+    $('#st-moon').textContent = ph.glyph + ' ' + ph.name + ' \u00B7 ' + Math.round(ph.illumination * 100) + '%';
     $('#st-site').textContent = VARDA.state.lat.toFixed(4) + '\u00B0, ' + VARDA.state.lon.toFixed(4) + '\u00B0';
   }
 
